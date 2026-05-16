@@ -15,3 +15,10 @@ this project assesses machine learning and remote sensing workflow for agricultu
 -xgboost
 -shap analysis
 -NDVI/NDWI
+## results 
+the hybrid ensemble model combining XBoost and RF was applied to simulate agricultural water stress under multiple climatre and land use scenarios
+1. model performance
+overall accuracy :83.4%
+kappa coefficient: 0.69
+2. Climate water stress relationship: R^2=0.946
+   
