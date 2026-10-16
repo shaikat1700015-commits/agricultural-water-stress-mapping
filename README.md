@@ -65,4 +65,4 @@ Settings (file names, split type, scenario values) sit in the CONFIG block at th
 ## Contact
 
 Md. Shaikat Chowdhury, Civil Engineering, RUET, Bangladesh
-[FILL IN: email / Google Scholar link]
+[FILL IN:LinkedIn: www.linkedin.com/in/shaikat-chowdhury-a86182329]
