@@ -30,7 +30,7 @@ study_area.shp
 
 Class order in the target raster: 0 No conflict, 1 Very high, 2 High, 3 Moderate, 4 Low, 5 Very low.
 
-The `.tif` and `.shp` files are large or not mine to redistribute, so they are ignored by git. 
+The `.tif` and `.shp` files are large to redistribute, so they are ignored by git. 
 ## Run it
 
 ```bash
