@@ -1,0 +1,302 @@
+"""
+Agricultural groundwater-conflict mapping with an RF + XGBoost soft-voting ensemble.
+
+Steps
+  1. Align all input rasters to the conflict-zone raster grid and clip to the study area.
+  2. Split valid pixels into train / validation / test (spatial blocks by default).
+  3. Oversample the training set, fit the ensemble.
+  4. Tune a decode-time multiplier for one class on the validation set only.
+  5. Report test-set metrics, predict the full map, save rasters and tables.
+  6. Re-run the prediction under rainfall, LULC and groundwater-potential scenarios.
+
+Edit the CONFIG block below, then run:  python conflict_prediction_pipeline.py
+"""
+import os
+from collections import Counter
+
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import rasterio
+import xgboost as xgb
+from imblearn.over_sampling import RandomOverSampler
+from rasterio.enums import Resampling
+from rasterio.features import geometry_mask
+from rasterio.warp import reproject
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.metrics import (accuracy_score, classification_report,
+                             cohen_kappa_score, confusion_matrix, f1_score)
+from sklearn.model_selection import StratifiedGroupKFold, train_test_split
+
+# ----------------------------------------------------------------------------
+# CONFIG
+# ----------------------------------------------------------------------------
+DATA_DIR = "data"          # folder holding the .tif files and the shapefile
+OUTPUT_DIR = "output"
+
+TARGET_FILE = "Agricultural conflict zone.tif"   # also the reference grid
+STUDY_AREA_FILE = "study_area.shp"
+
+# name -> (file, resampling). Use "nearest" for categorical layers.
+FEATURES = {
+    "LULC":              ("LULC1.tif", "nearest"),
+    "Rainfall":          ("Rainfall.tif", "bilinear"),
+    "Slope":             ("Slope.tif", "bilinear"),
+    "Soil":              ("Soil Type Map1.tif", "nearest"),
+    "Lineament_density": ("Lineament Density Map1.tif", "bilinear"),
+    "Lithology":         ("Lithology.tif", "nearest"),
+    "GWP_Zone":          ("GWP_Zone.tif", "nearest"),
+}
+
+# Index = raster value. Check this against your legend before trusting the tables.
+CLASS_NAMES = ["No conflict", "Very high conflict", "High conflict",
+               "Moderate conflict", "Low conflict", "Very low conflict"]
+
+SPLIT_MODE = "spatial"     # "spatial" (block-wise) or "random" (pixel-wise)
+BLOCK_SIZE = 100           # block edge in pixels, spatial mode only
+TEST_SIZE = 0.20
+VAL_SIZE = 0.20            # share of the non-test pixels
+SEED = 42
+
+TUNED_CLASS = 1            # class whose probability gets the decode multiplier
+N_ESTIMATORS_XGB = 2000
+N_ESTIMATORS_RF = 1000
+
+# Scenarios
+RAINFALL_FACTORS = [0.4, 0.5, 0.57, 0.6, 0.675, 0.7, 0.8, 0.805, 0.85, 0.9, 0.905, 1.1, 2.0]
+LULC_FROM, LULC_TO = 3, 5  # cropland -> other class (check your LULC legend)
+GWP_MAX_LOW, GWP_NEW = 1, 4  # GWP zones <= 1 are raised to 4
+
+NODATA_OUT = -9999
+
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+def path(name):
+    return os.path.join(DATA_DIR, name)
+
+
+def read_to_grid(file, method, shape, transform, crs):
+    """Read band 1 onto the reference grid. Nodata becomes NaN."""
+    resampling = Resampling.nearest if method == "nearest" else Resampling.bilinear
+    out = np.full(shape, np.nan, dtype=np.float32)
+    with rasterio.open(path(file)) as src:
+        reproject(
+            source=rasterio.band(src, 1), destination=out,
+            dst_transform=transform, dst_crs=crs,
+            src_nodata=src.nodata, dst_nodata=np.nan,
+            resampling=resampling,
+        )
+    return out
+
+
+def split_pixels(y, rows, cols):
+    """Return train, validation and test index arrays."""
+    idx = np.arange(len(y))
+    if SPLIT_MODE == "random":
+        rest, test = train_test_split(idx, test_size=TEST_SIZE, random_state=SEED, stratify=y)
+        train, val = train_test_split(rest, test_size=VAL_SIZE, random_state=SEED, stratify=y[rest])
+        return train, val, test
+
+    groups = (rows // BLOCK_SIZE) * 100_000 + (cols // BLOCK_SIZE)
+    k_test = round(1 / TEST_SIZE)
+    sgk = StratifiedGroupKFold(n_splits=k_test, shuffle=True, random_state=SEED)
+    rest, test = next(sgk.split(idx, y, groups))
+    k_val = round(1 / VAL_SIZE)
+    sgk = StratifiedGroupKFold(n_splits=k_val, shuffle=True, random_state=SEED)
+    tr, va = next(sgk.split(rest, y[rest], groups[rest]))
+    return rest[tr], rest[va], test
+
+
+def apply_multiplier(proba, multiplier, cls):
+    out = proba.copy()
+    out[:, cls] *= multiplier
+    return out
+
+
+def tune_multiplier(proba_val, y_val, cls):
+    grid = np.concatenate([np.linspace(0.4, 1.0, 7), np.linspace(1.05, 2.0, 20)])
+    best_m, best_f1 = 1.0, -1.0
+    for m in grid:
+        pred = np.argmax(apply_multiplier(proba_val, m, cls), axis=1)
+        f1 = f1_score(y_val, pred, labels=[cls], average=None, zero_division=0)[0]
+        if f1 > best_f1:
+            best_m, best_f1 = m, f1
+    return best_m, best_f1
+
+
+def to_map(values, valid2d, fill=NODATA_OUT):
+    out = np.full(valid2d.shape, fill, dtype=np.int32)
+    out[valid2d] = values
+    return out
+
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    names = list(FEATURES)
+    n_classes = len(CLASS_NAMES)
+
+    # 1. Reference grid
+    with rasterio.open(path(TARGET_FILE)) as ref:
+        shape, transform, crs = (ref.height, ref.width), ref.transform, ref.crs
+        profile = ref.profile.copy()
+    if crs.is_geographic:
+        print("WARNING: reference raster is in a geographic CRS, so km2 values will be wrong. "
+              "Reproject to a metric CRS first.")
+    pixel_km2 = abs(transform.a * transform.e) / 1e6
+    print(f"Pixel area: {pixel_km2:.6f} km2")
+
+    # 2. Study area, features, target
+    study = gpd.read_file(path(STUDY_AREA_FILE)).to_crs(crs)
+    geom = [study.geometry.union_all().__geo_interface__] if hasattr(study.geometry, "union_all") \
+        else [study.unary_union.__geo_interface__]
+    inside = geometry_mask(geom, out_shape=shape, transform=transform, invert=True)
+
+    X_full = np.stack([read_to_grid(f, m, shape, transform, crs) for f, m in FEATURES.values()], axis=-1)
+    y_full = read_to_grid(TARGET_FILE, "nearest", shape, transform, crs)
+
+    valid2d = inside & ~np.isnan(y_full) & ~np.isnan(X_full).any(axis=2)
+    X = X_full[valid2d]
+    y = y_full[valid2d].astype(int)
+    rows, cols = np.nonzero(valid2d)
+    print("Valid pixels:", len(y), "| classes present:", np.unique(y))
+
+    if y.min() < 0 or y.max() >= n_classes:
+        raise ValueError(f"Label values {np.unique(y)} do not fit CLASS_NAMES ({n_classes} names).")
+
+    # 3. Split
+    tr, va, te = split_pixels(y, rows, cols)
+    for label, ix in [("train", tr), ("validation", va), ("test", te)]:
+        print(f"{label:>10}: {len(ix):>8} px  {dict(sorted(Counter(y[ix].tolist()).items()))}")
+    if set(np.unique(y[tr])) != set(range(n_classes)):
+        raise ValueError("Training set is missing one or more classes. Try another SEED or BLOCK_SIZE.")
+
+    # 4. Oversample training pixels, fit ensemble
+    X_res, y_res = RandomOverSampler(random_state=SEED).fit_resample(X[tr], y[tr])
+    print("After oversampling:", dict(sorted(Counter(y_res.tolist()).items())))
+
+    xgb_model = xgb.XGBClassifier(
+        objective="multi:softprob", max_depth=8, learning_rate=0.05,
+        n_estimators=N_ESTIMATORS_XGB, subsample=0.9, colsample_bytree=0.9,
+        tree_method="hist", eval_metric="mlogloss", random_state=SEED)
+    rf_model = RandomForestClassifier(
+        n_estimators=N_ESTIMATORS_RF, class_weight="balanced_subsample",
+        random_state=SEED, n_jobs=-1)
+    ensemble = VotingClassifier([("xgb", xgb_model), ("rf", rf_model)], voting="soft")
+    ensemble.fit(X_res, y_res)
+
+    # 5. Tune the class multiplier on validation pixels only
+    mult, val_f1 = tune_multiplier(ensemble.predict_proba(X[va]), y[va], TUNED_CLASS)
+    print(f"Multiplier for class {TUNED_CLASS}: {mult:.3f} (validation F1 = {val_f1:.4f})")
+
+    def predict(Xin):
+        return np.argmax(apply_multiplier(ensemble.predict_proba(Xin), mult, TUNED_CLASS), axis=1)
+
+    # 6. Test-set metrics
+    y_test_pred = predict(X[te])
+    labels = list(range(n_classes))
+    print("\n=== Test set (held-out pixels) ===")
+    print("Overall accuracy:", round(accuracy_score(y[te], y_test_pred), 4))
+    print("Cohen's kappa:   ", round(cohen_kappa_score(y[te], y_test_pred), 4))
+    print(classification_report(y[te], y_test_pred, labels=labels,
+                                target_names=CLASS_NAMES, zero_division=0))
+    print("Confusion matrix:\n", confusion_matrix(y[te], y_test_pred, labels=labels))
+
+    # 7. Full-map prediction (includes training pixels, so it is agreement, not accuracy)
+    base_pred = predict(X)
+    print("\nFull-map agreement (kappa, includes training pixels):",
+          round(cohen_kappa_score(y, base_pred), 4))
+
+    obs = np.bincount(y, minlength=n_classes)
+    pred = np.bincount(base_pred, minlength=n_classes)
+    pd.DataFrame({
+        "Class": CLASS_NAMES,
+        "Observed_pixels": obs, "Observed_km2": obs * pixel_km2,
+        "Predicted_pixels": pred, "Predicted_km2": pred * pixel_km2,
+    }).to_csv(os.path.join(OUTPUT_DIR, "baseline_area_comparison.csv"), index=False)
+
+    out_profile = profile.copy()
+    out_profile.update(dtype=rasterio.int32, nodata=NODATA_OUT, count=1)
+    baseline_map = to_map(base_pred, valid2d)
+    with rasterio.open(os.path.join(OUTPUT_DIR, "predicted_conflict_baseline.tif"), "w", **out_profile) as dst:
+        dst.write(baseline_map, 1)
+
+    # 8. Feature importance, both models
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), dpi=300, sharey=True)
+    for ax, key, title in [(axes[0], "rf", "Random Forest"), (axes[1], "xgb", "XGBoost")]:
+        ax.barh(names, ensemble.named_estimators_[key].feature_importances_)
+        ax.set_title(title)
+        ax.set_xlabel("Importance")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "feature_importance.png"), dpi=300)
+    plt.close()
+
+    # 9. Scenarios (edit the valid-pixel feature matrix, then predict again)
+    i_rain, i_lulc, i_gwp = names.index("Rainfall"), names.index("LULC"), names.index("GWP_Zone")
+
+    def rainfall(factor):
+        def f(A):
+            A[:, i_rain] *= factor
+            return A
+        return f
+
+    def lulc_swap(A):
+        A[A[:, i_lulc] == LULC_FROM, i_lulc] = LULC_TO
+        return A
+
+    def gwp_improve(A):
+        A[A[:, i_gwp] <= GWP_MAX_LOW, i_gwp] = GWP_NEW
+        return A
+
+    scenarios = [(f"rainfall_{round(f * 100, 1)}pct", rainfall(f)) for f in RAINFALL_FACTORS]
+    scenarios += [("LULC_swap", lulc_swap), ("GPZ_improve", gwp_improve)]
+
+    rows_out = []
+    for name, fn in scenarios:
+        print("Scenario:", name)
+        scn_pred = predict(fn(X.copy()))
+        scn_map = to_map(scn_pred, valid2d)
+        with rasterio.open(os.path.join(OUTPUT_DIR, f"predicted_conflict_{name}.tif"), "w", **out_profile) as dst:
+            dst.write(scn_map, 1)
+
+        counts = np.bincount(scn_pred, minlength=n_classes)
+        row = {"Scenario": name}
+        for i in range(n_classes):
+            row[f"class_{i}_pixels"] = counts[i]
+            row[f"diff_class_{i}_pixels"] = counts[i] - pred[i]
+            row[f"class_{i}_km2"] = counts[i] * pixel_km2
+            row[f"diff_class_{i}_km2"] = (counts[i] - pred[i]) * pixel_km2
+        rows_out.append(row)
+
+        plt.figure(figsize=(9, 5), dpi=300)
+        plt.bar(CLASS_NAMES, counts * pixel_km2, label="Scenario")
+        plt.bar(CLASS_NAMES, pred * pixel_km2, alpha=0.5, label="Baseline")
+        plt.ylabel("Area (km2)")
+        plt.xticks(rotation=30, ha="right")
+        plt.title(f"Conflict area: {name}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"barchart_{name}.png"), dpi=300)
+        plt.close()
+
+        diff = np.ma.masked_where(valid2d == 0, scn_map - baseline_map)
+        plt.figure(figsize=(10, 8), dpi=300)
+        plt.imshow(diff, cmap=plt.get_cmap("bwr", 11), vmin=-5, vmax=5)
+        plt.colorbar(label="Class difference (scenario minus baseline)")
+        plt.title(f"Difference map: {name}")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, f"diffmap_{name}.png"), dpi=300)
+        plt.close()
+
+    pd.DataFrame(rows_out).to_csv(os.path.join(OUTPUT_DIR, "scenario_area_stats.csv"), index=False)
+    print(f"Done. Everything is in '{OUTPUT_DIR}/'.")
+
+
+if __name__ == "__main__":
+    main()

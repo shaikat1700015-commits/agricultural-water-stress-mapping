@@ -1,0 +1,8 @@
+numpy
+pandas
+matplotlib
+rasterio
+geopandas
+scikit-learn>=1.1
+xgboost
+imbalanced-learn
