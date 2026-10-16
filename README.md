@@ -2,8 +2,7 @@
 
 This repo holds the code I used to map zones of agricultural conflict over groundwater and to see how those zones shift under rainfall, land-use and groundwater-potential scenarios. The model is a soft-voting ensemble of Random Forest and XGBoost, trained on pixels from co-registered raster layers.
 
-**Study area:** [FILL IN: district / region, country]
-**Related manuscript:** [FILL IN: title, status, or "under review"]
+
 
 ## What the script does
 
@@ -19,7 +18,7 @@ This repo holds the code I used to map zones of agricultural conflict over groun
 
 Put these files in `data/` (they are not in the repo, see below).
 
-| Layer | File | Source / how it was made |
+| Layer | File 
 |---|---|---|
 | Land use / land cover | `LULC1.tif` |  |
 | Rainfall | `Rainfall.tif` |  |
