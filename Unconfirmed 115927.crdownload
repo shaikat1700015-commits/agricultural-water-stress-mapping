@@ -1,16 +1,3 @@
-"""
-Agricultural groundwater-conflict mapping with an RF + XGBoost soft-voting ensemble.
-
-Steps
-  1. Align all input rasters to the conflict-zone raster grid and clip to the study area.
-  2. Split valid pixels into train / validation / test (spatial blocks by default).
-  3. Oversample the training set, fit the ensemble.
-  4. Tune a decode-time multiplier for one class on the validation set only.
-  5. Report test-set metrics, predict the full map, save rasters and tables.
-  6. Re-run the prediction under rainfall, LULC and groundwater-potential scenarios.
-
-Edit the CONFIG block below, then run:  python conflict_prediction_pipeline.py
-"""
 import os
 from collections import Counter
 
