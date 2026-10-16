@@ -18,14 +18,14 @@ This repo holds the code I used to map zones of agricultural conflict over groun
 
 
 
- Land use & land cover.tif`   
-Rainfall.tif
-Slope.tif
-Soil Type Map1.tif
-Lineament Density Map1.tif
-Lithology.tif
-GWP_Zone.tif
-Agricultural conflict zone.tif
+ Land use & land cover.tif,   
+,Rainfall.tif
+,Slope.tif
+,Soil Type Map1.tif
+,Lineament Density Map1.tif
+,Lithology.tif
+,GWP_Zone.tif
+,Agricultural conflict zone.tif
 study_area.shp
 
 Class order in the target raster: 0 No conflict, 1 Very high, 2 High, 3 Moderate, 4 Low, 5 Very low.
