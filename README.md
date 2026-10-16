@@ -21,20 +21,19 @@ Put these files in `data/` (they are not in the repo, see below).
 
 | Layer | File | Source / how it was made |
 |---|---|---|
-| Land use / land cover | `LULC1.tif` | [FILL IN] |
-| Rainfall | `Rainfall.tif` | [FILL IN] |
-| Slope | `Slope.tif` | [FILL IN] |
-| Soil type | `Soil Type Map1.tif` | [FILL IN] |
-| Lineament density | `Lineament Density Map1.tif` | [FILL IN] |
-| Lithology | `Lithology.tif` | [FILL IN] |
-| Groundwater potential zone | `GWP_Zone.tif` | [FILL IN: e.g. which layers and weights it was derived from] |
-| Conflict zone (target) | `Agricultural conflict zone.tif` | [FILL IN: how the six classes were defined] |
-| Study area | `study_area.shp` | [FILL IN] |
+| Land use / land cover | `LULC1.tif` |  |
+| Rainfall | `Rainfall.tif` |  |
+| Slope | `Slope.tif` | |
+| Soil type | `Soil Type Map1.tif` | |
+| Lineament density | `Lineament Density Map1.tif` |  |
+| Lithology | `Lithology.tif` |  |
+| Groundwater potential zone | `GWP_Zone.tif` |  |
+| Conflict zone (target) | `Agricultural conflict zone.tif` | |
+| Study area | `study_area.shp` | |
 
 Class order in the target raster: 0 No conflict, 1 Very high, 2 High, 3 Moderate, 4 Low, 5 Very low.
 
-The `.tif` and `.shp` files are large or not mine to redistribute, so they are ignored by git. [FILL IN: "Data are available on request" or a Zenodo link.]
-
+The `.tif` and `.shp` files are large or not mine to redistribute, so they are ignored by git. 
 ## Run it
 
 ```bash
@@ -50,19 +49,17 @@ Settings (file names, split type, scenario values) sit in the CONFIG block at th
 - `diffmap_*.png`, `barchart_*.png`: scenario minus baseline
 - `feature_importance.png`: RF and XGBoost importances
 
-## Results
 
-[FILL IN after a final run: test-set overall accuracy, kappa, and the per-class F1 table. Quote the test-set numbers, not the full-map ones.]
 
 ## Things to keep in mind
 
 - The full-map kappa printed by the script includes training pixels. It describes agreement, not accuracy. Use the test-set numbers for performance.
 - The class multiplier is tuned on the validation set, so it does not touch the test set.
-- `GWP_Zone` is used as a predictor. If the conflict classes were built partly from the same layers that produced `GWP_Zone`, the model can pick up that link instead of real spatial patterns. [FILL IN: one sentence on how you handled this.]
+- `GWP_Zone` is used as a predictor. If the conflict classes were built partly from the same layers that produced `GWP_Zone`, the model can pick up that link instead of real spatial patterns.
 - Scenario runs change one input at a time and hold the others fixed. They show how the model responds, not a forecast.
 - Pixel areas assume the rasters are in a projected (metric) CRS. The script warns if they are not.
 
 ## Contact
 
 Md. Shaikat Chowdhury, Civil Engineering, RUET, Bangladesh
-[FILL IN:LinkedIn: www.linkedin.com/in/shaikat-chowdhury-a86182329]
+[LinkedIn: www.linkedin.com/in/shaikat-chowdhury-a86182329]
