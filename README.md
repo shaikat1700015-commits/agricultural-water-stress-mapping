@@ -16,19 +16,17 @@ This repo holds the code I used to map zones of agricultural conflict over groun
 
 ## Input data
 
-Put these files in `data/` (they are not in the repo, see below).
 
-| Layer | File 
-|---|---|---|
-| Land use / land cover | `LULC1.tif` |  |
-| Rainfall | `Rainfall.tif` |  |
-| Slope | `Slope.tif` | |
-| Soil type | `Soil Type Map1.tif` | |
-| Lineament density | `Lineament Density Map1.tif` |  |
-| Lithology | `Lithology.tif` |  |
-| Groundwater potential zone | `GWP_Zone.tif` |  |
-| Conflict zone (target) | `Agricultural conflict zone.tif` | |
-| Study area | `study_area.shp` | |
+
+ Land use & land cover.tif`   
+Rainfall.tif
+Slope.tif
+Soil Type Map1.tif
+Lineament Density Map1.tif
+Lithology.tif
+GWP_Zone.tif
+Agricultural conflict zone.tif
+study_area.shp
 
 Class order in the target raster: 0 No conflict, 1 Very high, 2 High, 3 Moderate, 4 Low, 5 Very low.
 
